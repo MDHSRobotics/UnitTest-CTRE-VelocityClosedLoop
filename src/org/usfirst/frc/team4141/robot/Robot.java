@@ -11,10 +11,16 @@ import edu.wpi.first.wpilibj.command.Command;
 import edu.wpi.first.wpilibj.command.Scheduler;
 import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import com.ctre.phoenix.motorcontrol.ControlMode;
+import com.ctre.phoenix.motorcontrol.FeedbackDevice;
+import com.ctre.phoenix.motorcontrol.can.*;
+import edu.wpi.first.wpilibj.IterativeRobot;
+import edu.wpi.first.wpilibj.Joystick;
+import edu.wpi.first.wpilibj.Joystick.AxisType;
 
 
 /**
- * Example demonstrating the Position closed-loop servo.
+ * Example demonstrating the Velocity closed-loop servo.
  * 
  * Tested with Logitech F350 USB Gamepad inserted into Driver Station
  * 
@@ -29,7 +35,7 @@ import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
  * Once you've ensured your feedback device is in-phase with the motor,
  * use button 1 to servo to target position.  
  * 
- * Button 1 - Enters Closed Loop Position mode; the target position is proportional to the
+ * Button 1 - Enters Closed Loop Velocity mode; the target velocity is proportional to the
  *            value of the Y-axis of the joystick when button 1 is pressed
  * Button 2 - Drives the motor with power percentage based on the Y-axis of the joystick
  *            when button 2 is pressed 
@@ -47,15 +53,9 @@ import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
  */
 
 //  This project was based on the CTRE Sample Phoenix program on their website:
-//		https://github.com/CrossTheRoadElec/Phoenix-Examples-Languages/tree/master/Java/PositionClosedLoop
+//		https://github.com/CrossTheRoadElec/Phoenix-Examples-Languages/tree/master/Java/VelocityClosedLoop
 //  The base program was modified somewhat to be more readable and to display information on the SmartDashboard
 
-import com.ctre.phoenix.motorcontrol.ControlMode;
-import com.ctre.phoenix.motorcontrol.FeedbackDevice;
-import com.ctre.phoenix.motorcontrol.can.*;
-import edu.wpi.first.wpilibj.IterativeRobot;
-import edu.wpi.first.wpilibj.Joystick;
-import edu.wpi.first.wpilibj.Joystick.AxisType;
 
 public class Robot extends IterativeRobot {
 
@@ -85,30 +85,13 @@ public class Robot extends IterativeRobot {
 		talon.configNominalOutputReverse(0, Constants.kTimeoutMs);
 		talon.configPeakOutputForward(1, Constants.kTimeoutMs);
 		talon.configPeakOutputReverse(-1, Constants.kTimeoutMs);
-		
-		/*
-		 * set the allowable closed-loop error, Closed-Loop output will be
-		 * neutral within this range. See Table in Section 17.2.1 for native
-		 * units per rotation.
-		 */
-		talon.configAllowableClosedloopError(0, Constants.kPIDLoopIdx, Constants.kTimeoutMs);
 
-		// Set closed loop gains in slot0, typically kF stays zero.
+		// Set closed loop gains in slot0
 		talon.config_kF(Constants.kPIDLoopIdx, 0.0, Constants.kTimeoutMs);
 		talon.config_kP(Constants.kPIDLoopIdx, 0.1, Constants.kTimeoutMs);
 		talon.config_kI(Constants.kPIDLoopIdx, 0.0, Constants.kTimeoutMs);
 		talon.config_kD(Constants.kPIDLoopIdx, 0.0, Constants.kTimeoutMs);
 
-		// Lets grab the 360 degree position of the MagEncoder's absolute
-		// position, and initially set the relative sensor to match.
-		int absolutePosition = talon.getSensorCollection().getPulseWidthPosition();
-		// Mask out overflows, keep bottom 12 bits
-		absolutePosition &= 0xFFF;
-		if (Constants.kSensorPhase)	absolutePosition *= -1;
-		if (Constants.kMotorInvert)	absolutePosition *= -1;
-		
-		// Set the quadrature (relative) sensor to match absolute
-		talon.setSelectedSensorPosition(absolutePosition, Constants.kPIDLoopIdx, Constants.kTimeoutMs);
 	}
 	
 	public void disabledPeriodic() {
@@ -151,21 +134,26 @@ public class Robot extends IterativeRobot {
 		stringBuffer.append((int) (motorOutput * 100));
 		stringBuffer.append("%"); 
 
-		stringBuffer.append("\tCurrent Position: ");
-		stringBuffer.append(talon.getSelectedSensorPosition(0));
-		stringBuffer.append("units");
-
+		stringBuffer.append("\tSpeed: ");
+		stringBuffer.append(talon.getSelectedSensorVelocity(Constants.kPIDLoopIdx));
+		
+		double targetVelocity_UnitsPer100ms = 0.;
 		// On button1 press enter closed-loop mode on target position (but ignore subsequent presses)
 		if (!wasPrevPressButton1 && button1Pressed) {
-			// Position mode - button1 just pressed - display it in RioLog
+			// Velocity mode - button1 just pressed - display it in RioLog
 			stringBuffer.append("Button 1 pressed\n");
 			
-			// Compute the target position = 10 Rotations * 4096 units/rev in either direction
-			targetPositionRotations = yAxisValue * 10.0 * 4096;
-			talon.set(ControlMode.Position, targetPositionRotations);
+			// Speed mode
+			// Convert 500 RPM to units / 100ms.
+			// 4096 Units/Rev * 500 RPM / 600 100ms/min in either direction:
+			// velocity setpoint is in units/100ms
+			targetVelocity_UnitsPer100ms = yAxisValue * 500.0 * 4096 / 600;
+
+			// 500 RPM in either direction
+			talon.set(ControlMode.Velocity, targetVelocity_UnitsPer100ms);
 			
 			// Display the target position on the SmartDashboard
-			SmartDashboard.putNumber("targetPositionRotations", targetPositionRotations);
+			SmartDashboard.putNumber("targetVelocity_UnitsPer100ms", targetVelocity_UnitsPer100ms);
 		}
 		
 		// On button2 just straight drive
@@ -178,17 +166,15 @@ public class Robot extends IterativeRobot {
 		}
 		
 		// If Talon is in position closed-loop, print some more info
-		if (talon.getControlMode() == ControlMode.Position) {
+		if (talon.getControlMode() == ControlMode.Velocity) {
 			// Output error and target position to RioLog
 
 			stringBuffer.append("\tClosed Loop Error: ");		
 			int currentClosedLoopError = talon.getClosedLoopError(Constants.kPIDLoopIdx);
 			stringBuffer.append(currentClosedLoopError);
-			stringBuffer.append("units");
 
 			stringBuffer.append("\tTarget: ");
-			stringBuffer.append(targetPositionRotations);
-			stringBuffer.append("units"); /* units */
+			stringBuffer.append(targetVelocity_UnitsPer100ms);
 
 			// Display error in SmartDashboard
 			SmartDashboard.putNumber("Current Closed Loop Error", currentClosedLoopError);
